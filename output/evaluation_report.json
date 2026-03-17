@@ -1,0 +1,33 @@
+{
+  "test_set": {
+    "n_matches": 13838,
+    "year_range": "2021\u20132024"
+  },
+  "classification": {
+    "log_loss": 0.6037,
+    "brier_score": 0.209,
+    "roc_auc": 0.7321,
+    "accuracy": 0.6627,
+    "precision": {
+      "p1": 0.6634,
+      "p2": 0.6621
+    },
+    "recall": {
+      "p1": 0.6553,
+      "p2": 0.6702
+    }
+  },
+  "profitability": {
+    "has_odds": false,
+    "ev_threshold": 1.2,
+    "model": {
+      "label": "Model value bets",
+      "n_bets": 0
+    },
+    "baseline": {
+      "label": "Always-favourite baseline",
+      "n_bets": 0
+    },
+    "threshold_sweep": []
+  }
+}

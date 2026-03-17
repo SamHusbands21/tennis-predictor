@@ -1,0 +1,8 @@
+[ req ]
+distinguished_name = req_distinguished_name
+[ req_distinguished_name ]
+[ ssl_client ]
+basicConstraints = CA:FALSE
+nsCertType = client
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = clientAuth

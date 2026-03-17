@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Raw ATP CSVs are re-downloaded on each run — no need to commit
+data/raw/sackmann/
+
+# Processed features are rebuilt each run
+data/processed/
+
+# Model artefacts — too large for GitHub (>100 MB); regenerate with src.models.train
+models/*.joblib
+models/*.pkl
+
+# Raw tennis-data.co.uk supplement cache
+data/raw/tennis_data_co_uk/
+
+# Secrets — NEVER commit
+.env
+*.crt
+*.key
+*.pem
+
+# Pipeline logs
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
