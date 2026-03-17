@@ -5,7 +5,7 @@ serve statistics, with live pre-match value bet recommendations sourced from the
 Betfair Exchange.
 
 Built to complement the [pl-predictor](https://github.com/SamHusbands21/sam_website)
-football model and integrated into [samhusbands.com](https://samhusbands.com).
+football model and integrated into my personal website.
 
 ---
 
