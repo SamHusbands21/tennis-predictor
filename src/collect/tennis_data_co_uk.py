@@ -4,8 +4,9 @@ Download ATP match results from tennis-data.co.uk.
 Used as a supplement to Jeff Sackmann's data for years that Sackmann has not
 yet published.  Updated ~daily by the site maintainer.
 
-IMPORTANT: odds columns in the source files are intentionally ignored.
-All live odds come exclusively from Betfair Exchange.
+Match results are downloaded without odds (Betfair Exchange odds are not
+available from this source).  A separate download_historical_odds() function
+extracts Pinnacle Sports closing odds (PSW/PSL) for use in backtesting.
 """
 
 from __future__ import annotations
@@ -327,6 +328,119 @@ def download_supplement(
 
     if not frames:
         return pd.DataFrame(columns=_SACKMANN_COLS)
+
+    combined = pd.concat(frames, ignore_index=True)
+    return combined.sort_values("date").reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Historical odds (Pinnacle Sports) — for evaluation / backtesting
+# ---------------------------------------------------------------------------
+
+def _download_year_odds(year: int, name_to_id: dict[str, int], retries: int = 3) -> pd.DataFrame:
+    """
+    Download a tennis-data.co.uk year file and return Pinnacle Sports closing
+    odds (PSW = winner odds, PSL = loser odds) alongside resolved player IDs.
+
+    Returns DataFrame with columns:
+        date, winner_id, loser_id, odds_winner, odds_loser
+    Rows missing Pinnacle odds are dropped.
+    """
+    url = _year_url(year)
+    raw_bytes: bytes | None = None
+
+    for attempt in range(retries):
+        try:
+            resp = requests.get(url, timeout=60)
+            resp.raise_for_status()
+            raw_bytes = resp.content
+            break
+        except Exception as exc:
+            logger.warning(f"  Attempt {attempt + 1} for odds {year}: {exc}")
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+
+    if raw_bytes is None:
+        raise RuntimeError(f"Failed to download tennis-data {year} for Pinnacle odds")
+
+    engine = "openpyxl" if year >= 2013 else "xlrd"
+    df = pd.read_excel(io.BytesIO(raw_bytes), engine=engine)
+    df.columns = [str(c).strip() for c in df.columns]
+
+    if "Comment" in df.columns:
+        df = df[df["Comment"].astype(str).str.lower() != "walkover"]
+
+    df["date"] = pd.to_datetime(df.get("Date"), errors="coerce")
+    df = df.dropna(subset=["date", "Winner", "Loser"])
+
+    df["winner_id"] = df["Winner"].astype(str).str.strip().apply(
+        lambda n: _resolve_id(n, name_to_id)
+    )
+    df["loser_id"] = df["Loser"].astype(str).str.strip().apply(
+        lambda n: _resolve_id(n, name_to_id)
+    )
+
+    df["odds_winner"] = pd.to_numeric(df.get("PSW"), errors="coerce")
+    df["odds_loser"]  = pd.to_numeric(df.get("PSL"), errors="coerce")
+
+    out = df[["date", "winner_id", "loser_id", "odds_winner", "odds_loser"]].copy()
+    out = out.dropna(subset=["odds_winner", "odds_loser"])
+    logger.info(f"  Pinnacle odds {year}: {len(out)} matches")
+    return out
+
+
+def download_historical_odds(
+    from_year: int,
+    to_year: int,
+    name_to_id: dict[str, int],
+    force_current: bool = True,
+) -> pd.DataFrame:
+    """
+    Download Pinnacle Sports closing odds (PSW/PSL) from tennis-data.co.uk
+    for the given year range.  Used by engineer.py to populate odds_p1/odds_p2
+    on the historical feature matrix so that evaluate.py can run profitability
+    analysis.
+
+    Note: Betfair Exchange odds are not available from tennis-data.co.uk.
+    Pinnacle Sports is used as a proxy — it carries the lowest bookmaker
+    margin (~2%) and is the industry-standard reference odds source.
+
+    Caches each year's odds to:
+        data/raw/tennis_data_co_uk/odds_{year}.parquet
+
+    Returns DataFrame with columns:
+        date, winner_id, loser_id, odds_winner, odds_loser
+    """
+    current_year = datetime.now().year
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    frames: list[pd.DataFrame] = []
+
+    for year in range(from_year, to_year + 1):
+        cache_path = RAW_DIR / f"odds_{year}.parquet"
+        is_current = year == current_year
+        should_download = not cache_path.exists() or (force_current and is_current)
+
+        if not should_download:
+            logger.info(f"  Using cached Pinnacle odds {year}")
+            frames.append(pd.read_parquet(cache_path))
+            continue
+
+        try:
+            logger.info(f"  Downloading Pinnacle odds for {year}...")
+            df = _download_year_odds(year, name_to_id)
+            if not df.empty:
+                df.to_parquet(cache_path, index=False)
+            frames.append(df)
+        except Exception as exc:
+            logger.warning(f"  Skipping Pinnacle odds for {year}: {exc}")
+            if cache_path.exists():
+                logger.info(f"  Falling back to cached Pinnacle odds {year}")
+                frames.append(pd.read_parquet(cache_path))
+
+    if not frames:
+        return pd.DataFrame(
+            columns=["date", "winner_id", "loser_id", "odds_winner", "odds_loser"]
+        )
 
     combined = pd.concat(frames, ignore_index=True)
     return combined.sort_values("date").reset_index(drop=True)

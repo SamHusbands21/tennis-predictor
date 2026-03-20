@@ -62,6 +62,9 @@ SERVE_WINDOW = 10
 MAX_DAYS_REST = 21         # cap days of rest — anything beyond 3 weeks is irrelevant
 PREV_MINUTES_DEFAULT = 90  # assumed neutral match length for first known match
 
+# First year of the held-out test set — odds are downloaded for this window only
+ODDS_FROM_YEAR = 2021
+
 TOURNEY_LEVEL_MAP: dict[str, int] = {
     "G": 4,  # Grand Slam
     "M": 3,  # Masters (ATP 1000)
@@ -372,6 +375,98 @@ def _random_flip(df: pd.DataFrame, seed: int = RANDOM_SEED) -> pd.DataFrame:
     return out
 
 
+def _enrich_odds(df: pd.DataFrame, raw_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Download Pinnacle Sports historical odds from tennis-data.co.uk and join
+    them onto the feature matrix as odds_p1 / odds_p2.
+
+    Uses week-level date matching (Monday-anchored) to account for Sackmann's
+    approximate per-match dates (tournament start + round offset).  The same
+    pair of players almost never meets twice in the same calendar week across
+    different tournaments, so the weekly bucket is a safe join key.
+
+    Rows with no matching odds entry are left as NaN (≈ matches with no
+    Pinnacle coverage or player-name lookup failures).
+
+    Note: Pinnacle Sports odds are used as a proxy for Betfair Exchange odds.
+    Pinnacle carries the lowest bookmaker margin (~2%) and is the standard
+    reference odds source in sports-betting analytics.
+    """
+    from datetime import datetime as _dt
+    from src.collect.tennis_data_co_uk import build_name_lookup, download_historical_odds
+
+    current_year = _dt.now().year
+    logger.info(
+        f"Downloading Pinnacle odds ({ODDS_FROM_YEAR}–{current_year}) "
+        "from tennis-data.co.uk..."
+    )
+
+    name_to_id = build_name_lookup(raw_df)
+    odds_df = download_historical_odds(
+        from_year=ODDS_FROM_YEAR,
+        to_year=current_year,
+        name_to_id=name_to_id,
+    )
+
+    if odds_df.empty:
+        logger.warning("No Pinnacle odds available — odds_p1/odds_p2 will be NaN.")
+        df["odds_p1"] = np.nan
+        df["odds_p2"] = np.nan
+        return df
+
+    def _week_start(s: pd.Series) -> pd.Series:
+        d = pd.to_datetime(s)
+        return (d - pd.to_timedelta(d.dt.dayofweek, unit="D")).dt.normalize()
+
+    odds_df = odds_df.copy()
+    odds_df["_week"]      = _week_start(odds_df["date"])
+    odds_df["winner_id"]  = odds_df["winner_id"].astype(float)
+    odds_df["loser_id"]   = odds_df["loser_id"].astype(float)
+    # Guard against duplicate (week, winner, loser) keys in the odds data
+    odds_df = odds_df.drop_duplicates(
+        subset=["_week", "winner_id", "loser_id"], keep="first"
+    )
+
+    df = df.copy()
+    df["_week"]      = _week_start(df["date"])
+    df["_winner_id"] = np.where(
+        df["target"] == 1, df["player1_id"], df["player2_id"]
+    ).astype(float)
+    df["_loser_id"]  = np.where(
+        df["target"] == 1, df["player2_id"], df["player1_id"]
+    ).astype(float)
+
+    merged = df.merge(
+        odds_df[["_week", "winner_id", "loser_id", "odds_winner", "odds_loser"]].rename(
+            columns={"winner_id": "_winner_id", "loser_id": "_loser_id"}
+        ),
+        on=["_week", "_winner_id", "_loser_id"],
+        how="left",
+    )
+
+    # target=1 → player1 is winner: odds_p1=odds_winner, odds_p2=odds_loser
+    # target=0 → player1 is loser:  odds_p1=odds_loser,  odds_p2=odds_winner
+    df["odds_p1"] = np.where(
+        merged["target"].values == 1,
+        merged["odds_winner"].values,
+        merged["odds_loser"].values,
+    )
+    df["odds_p2"] = np.where(
+        merged["target"].values == 1,
+        merged["odds_loser"].values,
+        merged["odds_winner"].values,
+    )
+
+    df = df.drop(columns=["_week", "_winner_id", "_loser_id"])
+
+    matched = int(df["odds_p1"].notna().sum())
+    logger.info(
+        f"Pinnacle odds matched: {matched:,} / {len(df):,} rows "
+        f"({100 * matched / len(df):.1f}%)"
+    )
+    return df
+
+
 def build_features(
     raw_df: pd.DataFrame,
     save: bool = True,
@@ -446,11 +541,9 @@ def build_features(
     logger.info("Computing head-to-head win rates...")
     df["h2h_p1_win_rate"] = _h2h_win_rate(df)
 
-    # ── Odds placeholder (filled by caller or left NaN) ───────────────────────
-    if "odds_p1" not in df.columns:
-        df["odds_p1"] = np.nan
-    if "odds_p2" not in df.columns:
-        df["odds_p2"] = np.nan
+    # ── Odds: join Pinnacle historical odds from tennis-data.co.uk ───────────
+    logger.info("Enriching feature matrix with Pinnacle odds...")
+    df = _enrich_odds(df, raw_df)
 
     # ── Select output columns ─────────────────────────────────────────────────
     id_cols = [
